@@ -50,9 +50,26 @@ public class DbConnection {
     config.addDataSourceProperty("cachePrepStmts", cachePrepStmts);
     config.addDataSourceProperty("prepStmtCacheSize", prepStmtCacheSize);
     config.addDataSourceProperty("prepStmtCacheSqlLimit", prepStmtCacheSqlLimit);
-    config.addDataSourceProperty("maximumPoolSize", maximumPoolSize);
+    // setMaximumPoolSize, not addDataSourceProperty. The three above are Connector/J
+    // properties and belong on the DataSource; this one is HikariCP's own, and handing it to
+    // the driver means the driver ignores it and the pool silently keeps its default of 10.
+    // database.pool.size has therefore never had any effect - masked until now only because
+    // the chart's default happens to be 10 as well.
+    config.setMaximumPoolSize(maximumPoolSize);
+    // Build the pool without proving a connection first. HikariCP's default is to acquire one
+    // during construction and throw if it cannot, and this constructor runs inside
+    // Authorizer.configure() - where Kafka treats anything thrown as a fatal fault and
+    // terminates the process. A node whose DNS is not warm yet therefore dies rather than
+    // waits: observed on a freshly created KRaft controller, which crash-looped five times
+    // resolving mysql.service.consul while the broker beside it was serving happily.
+    //
+    // Deferring is safe because the lookup path already fails closed. A query against an
+    // unreachable database surfaces as ExecutionException in authorizeProjectUser, which
+    // retries and then returns DENIED - so an outage denies requests and logs loudly instead
+    // of taking the node down, and recovers on its own once the database answers.
+    config.setInitializationFailTimeout(-1);
     datasource = new HikariDataSource(config);
-    LOGGER.info("connection made successfully to: {}", dbUrl);
+    LOGGER.info("Database pool created for: {} (connections are established on first use)", dbUrl);
   }
 
   public Integer getTopicProject(String topicName) throws SQLException {
